@@ -2589,8 +2589,8 @@ do
         local CreateWindow = Lib.CreateWindow
 
         getgenv().Window = CreateWindow(Lib, {
-            Title = "Cuacker Levi [Developer]",
-            SubTitle = "by cuacker",
+            Title = "Ayush Levi [Developer]",
+            SubTitle = "by Ayush",
             TabWidth = 125,
             Size = UDim2.fromOffset(500, 350),
             Acrylic = false,
