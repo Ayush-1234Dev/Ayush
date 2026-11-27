@@ -2349,11 +2349,16 @@ do
             ["Speed Boat Summon Leviathan"] = 350,
             ["Speed Boat Shoot Heart Position"] = 350,
             ["Input Speed Boat Auto Drive"] = 350,
+            ["Speed Follow Main"] = 350,
         }
 
         Tbl7.Speed = function(Key)
             local Value = tonumber(Config[Key])
             return Value and Value > 0 and Value or Tbl7.SpeedDefaults[Key]
+        end
+
+        Tbl7.BoatY = function()
+            return tonumber(Config["Boat Hunt Y"]) or 175
         end
 
         -- Reset: keep setting Health to 0 until it has stayed at 0 for 3s and the character has respawned
@@ -2584,8 +2589,8 @@ do
         local CreateWindow = Lib.CreateWindow
 
         getgenv().Window = CreateWindow(Lib, {
-            Title = "Ayush Levi [Developer]",
-            SubTitle = "by Ayush",
+            Title = "Cuacker Levi [Developer]",
+            SubTitle = "by cuacker",
             TabWidth = 125,
             Size = UDim2.fromOffset(500, 350),
             Acrylic = false,
@@ -2643,7 +2648,7 @@ setreadonly(MT, true)]])()
         end
     end
 
-    toTarget = function(Arg, Arg2, CFrame_, Arg3, Arg4)
+    toTarget = function(Arg, Arg2, CFrame_, Arg3, Arg4, SpeedKey)
         if IsPlayerDead() then
             if getgenv().Tween then
                 getgenv().Tween:Pause()
@@ -2679,6 +2684,8 @@ setreadonly(MT, true)]])()
             game:GetService("VirtualInputManager"):SendKeyEvent(true, "Space", false, game)
             wait()
             game:GetService("VirtualInputManager"):SendKeyEvent(false, "Space", false, game)
+            -- mobile: the Space key event doesn't unseat, Humanoid.Jump gets overwritten by the touch controls
+            game.Players.LocalPlayer.Character.Humanoid.Sit = false
             wait(1)
 
             if LocalPlayer2.Character:FindFirstChild("Humanoid") and LocalPlayer2.Character:FindFirstChild("HumanoidRootPart") and LocalPlayer2.Character.HumanoidRootPart:FindFirstChild("EffectsSY") then
@@ -2713,7 +2720,7 @@ setreadonly(MT, true)]])()
                 LocalPlayer2.Character.HumanoidRootPart.CFrame = CFrame_
             else
                 local TweenService = game:service("TweenService")
-                local TweenInfo_ = TweenInfo.new((Arg2 - Arg).Magnitude / Tbl7.Speed("Speed Player Tween"), Enum.EasingStyle.Linear)
+                local TweenInfo_ = TweenInfo.new((Arg2 - Arg).Magnitude / Tbl7.Speed(SpeedKey or "Speed Player Tween"), Enum.EasingStyle.Linear)
 
                 if game.Players.LocalPlayer.Character:FindFirstChild("Humanoid") and LocalPlayer2.Character.Humanoid.Health > 0 then
                     local Cframe = CFrame.new(0, 0, 0)
@@ -3233,12 +3240,36 @@ setreadonly(MT, true)]])()
 
         local PlayerSection = Tbl8.TabSpeeds:AddSection("Player")
         AddSpeed(PlayerSection, "Speed Player Tween", "Player Tween Speed", "Studs/s of every character tween (to NPCs, boat seats, owner, Frozen Watcher, enchant spot, Leviathan...)")
+        AddSpeed(PlayerSection, "Speed Follow Main", "Follow Main Speed", "Boat full: accounts without a seat follow the main")
+
+        PlayerSection:AddSlider("Follow Main Y", {
+            Title = "Follow Main Y",
+            Description = "Height above the main",
+            Default = tonumber(Config["Follow Main Y"]) or 20,
+            Min = 0,
+            Max = 200,
+            Rounding = 0,
+            Callback = function(Arg)
+                SaveSettings("Follow Main Y", Arg)
+            end,
+        })
 
         local HuntSection = Tbl8.TabSpeeds:AddSection("Boat Tween (Hunting)")
         AddSpeed(HuntSection, "Speed Boat Find Leviathan", "Boat Speed: Find Leviathan", "Sailing out to look for the Leviathan")
         AddSpeed(HuntSection, "Speed Boat Return", "Boat Speed: Return (Too Far)", "Sailing back when it's more than 10km away")
         AddSpeed(HuntSection, "Speed Boat Summon Leviathan", "Boat Speed: Summon Leviathan", "Going to the Leviathan Gate to summon it")
         AddSpeed(HuntSection, "Speed Boat Shoot Heart Position", "Boat Speed: Shoot Heart Position", "Going to the spot where the Frozen Heart gets shot")
+
+        HuntSection:AddInput("Boat Hunt Y", {
+            Title = "Boat Y",
+            Description = "Height while searching / returning",
+            Default = Tbl7.BoatY(),
+            Numeric = true,
+            Finished = false,
+            Callback = function(Arg)
+                SaveSettings("Boat Hunt Y", V51(Arg) == "string" and V16(Arg) or Arg)
+            end,
+        })
 
         local DriveSection = Tbl8.TabSpeeds:AddSection("Boat Drive (Tiki / Hydra)")
         AddSpeed(DriveSection, "Input Speed Boat Auto Drive", "Boat Speed: Drive To Tiki / Hydra", "MaxSpeed/TurnSpeed of the boat while driving the heart to Tiki or Hydra")
@@ -4443,8 +4474,18 @@ end
                 return Event
             end
 
-            if LocalPlayer2.Character.Humanoid.Sit and CountSeatedMainBoat() < 5 then
-                return DetectSeaEvents()
+            -- once helping, keep helping: after standing up Sit is false and the account used to go back to its seat every tick
+            -- followers (boat full, 6+ accounts) count as part of the group too
+            local InGroup = LocalPlayer2.Character.Humanoid.Sit or not checkboatMulti() and checkboatMulti(true)
+
+            if InGroup and CountSeatedMainBoat() < 5 then
+                Tbl7.MythicHelp = true
+            end
+
+            if Tbl7.MythicHelp then
+                Event = DetectSeaEvents()
+                Tbl7.MythicHelp = Event and true or false
+                return Event
             end
 
             return false
@@ -5846,6 +5887,72 @@ end
             end
         end
 
+        -- Alt: all 5 seated but the main's boat hasn't moved 20 studs in 8s -> jump, stay off 3s so the driver sees everyone jump.
+        -- Off while the FrozenHeart exists and within 300 of the Tiki/Hydra route end (boat stops there on purpose).
+        Tbl7.Stuck = {}
+        Tbl7.BoatStuckJump = function()
+            local S = Tbl7.Stuck
+
+            if S.Off and tick() < S.Off then
+                Tbl7.SetStatus("Boat Not Moving, Jumped", Tbl7.Colors.Yellow)
+                return true
+            end
+
+            local Boat = checkboatMulti(true)
+            local Seat = Boat and Boat:FindFirstChild("VehicleSeat")
+            local Humanoid = LocalPlayer2.Character.Humanoid
+            -- followers (boat full) hold too, otherwise they take the freed seats and the driver never sees 0 seated
+            local OnBoat = Humanoid.Sit or not checkboatMulti()
+
+            if not Seat or not OnBoat or workspace.Map:FindFirstChild("FrozenHeart") or CountSeatedMainBoat() < 5 or (Seat.Position - Tbl9[#Tbl9]).Magnitude < 300 or (Seat.Position - Tbl10[#Tbl10]).Magnitude < 300 then
+                S.Pos = nil
+                return false
+            end
+
+            if not S.Pos or (Seat.Position - S.Pos).Magnitude > 20 then
+                S.Pos, S.Time = Seat.Position, tick()
+                return false
+            end
+
+            if tick() - S.Time < 8 then
+                return false
+            end
+
+            S.Pos, S.Off = nil, tick() + 3
+            Humanoid.Sit = false
+            Tbl7.SetStatus("Boat Not Moving, Jumped", Tbl7.Colors.Yellow)
+            return true
+        end
+
+        -- 6+ accounts: no free seat on the main's boat -> follow the main from above
+        Tbl7.FollowMain = function()
+            local Name = Options["Select Owner Boat Beast Hunter"].Value
+            local Owner = Name and game.Players:FindFirstChild(Name)
+            local Root = Owner and Owner.Character and Owner.Character:FindFirstChild("HumanoidRootPart")
+
+            if not Root then
+                return false
+            end
+
+            local Cframe = Root.CFrame + Vector3.new(0, tonumber(Config["Follow Main Y"]) or 20, 0)
+            Tbl7.SetStatus("Boat Full, Following Main", Tbl7.Colors.Blue)
+            toTarget(LocalPlayer2.Character.HumanoidRootPart.Position, Cframe.Position, Cframe, false, true, "Speed Follow Main")
+            return true
+        end
+
+        -- Driver: every alt left its seat (seated count went from >0 to 0) -> jump too, the normal logic sits back down
+        Tbl7.DriverAllJumped = function()
+            local N = countSeatedPlayers()
+            local Was = Tbl7.LastSeated
+            Tbl7.LastSeated = N
+
+            if N == 0 and Was and Was > 0 and LocalPlayer2.Character.Humanoid.Sit then
+                LocalPlayer2.Character.Humanoid.Sit = false
+                Tbl7.SetStatus("All Accounts Jumped, Jump", Tbl7.Colors.Yellow)
+                return true
+            end
+        end
+
         local Tbl11 = {
             BuyBlackLeg = "Dark Step Teacher",
             BuySuperhuman = "Martial Arts Master",
@@ -6068,7 +6175,7 @@ end
                         end
                     elseif LocalPlayer2.Character.Humanoid.Sit and getgenv().noclip then
                         getgenv().noclip = false
-                    elseif not V60 and not LocalPlayer2.Character.Humanoid.Sit then
+                    elseif not V60 and not LocalPlayer2.Character.Humanoid.Sit and not (checkboatMulti(true) and Tbl7.FollowMain()) then
                         local N11 = workspace.Map.FrozenHeart.Inside.CFrame * CFrame.new(0, 50, 0)
                         toTarget(LocalPlayer2.Character.HumanoidRootPart.Position, N11.Position, N11, false, true)
                     end
@@ -6120,6 +6227,7 @@ end
 
                                 AutoGunAttackOnce()
                             elseif PathTerrorshark:FindFirstChildWhichIsA("Humanoid") then
+                                HumanoidRootPart = PathTerrorshark:FindFirstChild("HumanoidRootPart")
                                 UsedualFlock()
                                 ClickM1(PathTerrorshark, true)
                             else
@@ -6203,8 +6311,6 @@ end
                             SaveSettings("BoatStatus", "Sailing")
                             Tbl7.SetStatus("Go Find Leviathan", Tbl7.Colors.Blue)
                             getgenv().noclip = false
-                            local Cframe = CFrame.new(-10000000, 175, 37016.25)
-                            local Cframe2 = CFrame.new(-32975.9921875, 160, 25963.7109375)
                             local Y = OldBoat.VehicleSeat.Position.Y
                             local Flag4
 
@@ -6239,18 +6345,20 @@ end
                                     Flag4 = false
                                 end
 
-                                if countSeatedPlayers() < 4 then
+                                if Tbl7.DriverAllJumped() then
+                                    break
+                                elseif countSeatedPlayers() < 4 then
                                     stopBoatGhost()
                                     local Blue = Tbl7.Colors.Blue
                                     Tbl7.SetStatus("Waiting players (" .. countSeatedPlayers() .. "/4)", Blue)
                                 elseif Flag4 then
                                     Tbl7.SetStatus("Too far (>10km), returning...", Tbl7.Colors.Yellow)
                                     stopBoatGhost()
-                                    moveBoatGhost(OldBoat.VehicleSeat, Cframe2, Tbl7.Speed("Speed Boat Return"))
+                                    moveBoatGhost(OldBoat.VehicleSeat, CFrame.new(-32975.9921875, Tbl7.BoatY(), 25963.7109375), Tbl7.Speed("Speed Boat Return"))
                                 else
                                     Tbl7.SetStatus("Go Find Leviathan", Tbl7.Colors.Blue)
                                     stopBoatGhost()
-                                    moveBoatGhost(OldBoat.VehicleSeat, Cframe, Tbl7.Speed("Speed Boat Find Leviathan"))
+                                    moveBoatGhost(OldBoat.VehicleSeat, CFrame.new(-10000000, Tbl7.BoatY(), 37016.25), Tbl7.Speed("Speed Boat Find Leviathan"))
                                 end
 
                                 if not (not LocalPlayer2.Character.Humanoid.Sit or game.workspace._WorldOrigin.Locations:FindFirstChild("Frozen Dimension") or DetectSeaEventsMythic() or not OldBoat or not OldBoat.Parent or not checkboat()) then
@@ -6277,6 +6385,11 @@ end
                         end
                     else
                         Tbl7.SetStatus("Go Find Leviathan", Tbl7.Colors.Blue)
+
+                        if Tbl7.BoatStuckJump() then
+                            return
+                        end
+
                         local V60 = checkboatMulti()
                         local V61 = checkboatMulti(true)
 
@@ -6306,7 +6419,7 @@ end
                         elseif not V60 and not LocalPlayer2.Character.Humanoid.Sit and V61 then
                             local MeshesSerpentShipRetopoRopes = V61:FindFirstChild("Meshes/Serpent Ship Retopo ropes ", true)
 
-                            if MeshesSerpentShipRetopoRopes and not LocalPlayer2.Character.Humanoid.Sit then
+                            if not Tbl7.FollowMain() and MeshesSerpentShipRetopoRopes and not LocalPlayer2.Character.Humanoid.Sit then
                                 toTarget(LocalPlayer2.Character.HumanoidRootPart.Position, MeshesSerpentShipRetopoRopes.Position, MeshesSerpentShipRetopoRopes.CFrame)
                             end
                         elseif not V60 and not V61 then
@@ -6537,7 +6650,9 @@ end
                         end
                         local V62 = checkboat()
 
-                        if V61 then
+                        if V61 and Config["Auto Summon Leviathan"] == false then
+                            Tbl7.SetStatus("Auto Summon Off", Tbl7.Colors.Yellow)
+                        elseif V61 then
                             if getgenv().TweenBoatBack then
                                 getgenv().TweenBoatBack:Pause()
                                 getgenv().TweenBoatBack:Cancel()
@@ -6582,7 +6697,7 @@ end
                             while true do
                                 wait(1)
 
-                                if tick() - Now5 >= 30 then
+                                if tick() - Now5 >= 30 and Config["Auto Summon Leviathan"] ~= false then
                                     if LocalPlayer2:DistanceFromCharacter(V61.HumanoidRootPart.Position) < 8 then
                                         game.ReplicatedStorage.Remotes.CommF_:InvokeServer("OpenLeviathanGate")
                                     else
@@ -6654,6 +6769,14 @@ end
             end
 
             SaveSettings("Auto Dragon Storm(Risk)", Arg)
+        end,
+    })
+
+    Tbl8.TabHunt:AddToggle("Auto Summon Leviathan", {
+        Title = Translate("Auto Summon Leviathan"),
+        Default = Config["Auto Summon Leviathan"] ~= false,
+        Callback = function(Arg)
+            SaveSettings("Auto Summon Leviathan", Arg)
         end,
     })
 
